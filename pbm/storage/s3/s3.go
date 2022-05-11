@@ -558,7 +558,8 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					lastw = v.chunk.end
 				}
 
-				if lastw >= pr.tsize {
+				// we've read all bytes in the object
+				if lastw+1 >= pr.tsize {
 					return
 				}
 
