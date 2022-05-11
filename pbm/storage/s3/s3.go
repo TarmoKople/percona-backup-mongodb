@@ -535,13 +535,14 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 						go func() { result <- rs }()
 					}
 					continue
-
 				}
 
-				b, _ := io.CopyBuffer(w, rs.r, pr.buf) //!!! <== ERROR
-				rs.r.Close()
-				lastw = rs.chunk.end
-				s.log.Debug("part %d-%d | WRITE (%d) / ln %d", rs.chunk.start, rs.chunk.end, b, len(*rbuf))
+				if rs.r != nil {
+					b, _ := io.CopyBuffer(w, rs.r, pr.buf) //!!! <== ERROR
+					rs.r.Close()
+					lastw = rs.chunk.end
+					s.log.Debug("part %d-%d | WRITE (%d) / ln %d", rs.chunk.start, rs.chunk.end, b, len(*rbuf))
+				}
 
 				for len(*rbuf) > 0 {
 					v := []*dResult(*rbuf)[0]
