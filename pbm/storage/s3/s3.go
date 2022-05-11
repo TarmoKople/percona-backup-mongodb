@@ -482,6 +482,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 	pr := s.newPartReader(name)
 	pr.setSession(s.s3s)
 	pr.tsize = fstat.Size
+	pr.l.Debug("SIZE %d", pr.tsize)
 
 	r, w := io.Pipe()
 
@@ -721,7 +722,6 @@ func (pr *partReader) setSize(o *s3.GetObjectOutput) {
 	}
 
 	pr.tsize = size
-	pr.l.Debug("SIZEEE %d", pr.tsize)
 }
 
 // SourceReader reads object with the given name from S3
