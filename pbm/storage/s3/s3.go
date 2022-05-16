@@ -552,10 +552,12 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					}
 
 					r := heap.Pop(rbuf).(*dResult).r
-					b, _ := io.CopyBuffer(w, r, pr.buf) //!!! <== Error
-					r.Close()
-					s.log.Debug("part %d-%d | BUFF WRITE (%d)", v.chunk.start, v.chunk.end, b)
-					lastw = v.chunk.end
+					if r != nil {
+						b, _ := io.CopyBuffer(w, r, pr.buf) //!!! <== Error
+						r.Close()
+						s.log.Debug("part %d-%d | BUFF WRITE (%d)", v.chunk.start, v.chunk.end, b)
+						lastw = v.chunk.end
+					}
 				}
 
 				// we've read all bytes in the object
