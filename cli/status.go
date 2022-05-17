@@ -594,7 +594,7 @@ func getStorageStat(cn *pbm.PBM, rsMap map[string]string) (fmt.Stringer, error) 
 	}
 
 	s.PITR, err = getPITRranges(cn, stg, rsMap)
-	if err != nil && !errors.Is(err, storage.ErrNotExist) {
+	if err != nil {
 		return s, errors.Wrap(err, "get PITR chunks")
 	}
 

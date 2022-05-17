@@ -360,7 +360,7 @@ func (s *S3) List(prefix, suffix string) ([]storage.FileInfo, error) {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case s3.ErrCodeNoSuchKey:
-				return nil, storage.ErrNotExist
+				return files, nil
 			}
 		}
 		return nil, err
