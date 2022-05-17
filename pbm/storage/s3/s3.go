@@ -357,7 +357,13 @@ func (s *S3) List(prefix, suffix string) ([]storage.FileInfo, error) {
 			return true
 		})
 	if err != nil {
-		return nil, errors.Wrap(err, "get backup list")
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case s3.ErrCodeNoSuchKey:
+				return nil, storage.ErrNotExist
+			}
+		}
+		return nil, err
 	}
 
 	return files, nil
