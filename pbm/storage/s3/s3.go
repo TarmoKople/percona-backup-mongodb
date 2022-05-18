@@ -37,7 +37,7 @@ const (
 
 	defaultS3Region = "us-east-1"
 
-	downloadChuckSize = 10 << 20 // 10Mb
+	downloadChuckSize = 100 << 20 // 10Mb
 	downloadRetries   = 10
 )
 
@@ -471,7 +471,7 @@ func (b *chunksBuf) Pop() any {
 	return x
 }
 
-const buffMaxSize = 1 << 30 // 1Gb
+const buffMaxSize = 10 << 30 // 1Gb
 
 func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 	fstat, err := s.FileStat(name)
