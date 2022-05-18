@@ -413,6 +413,11 @@ func (r *PhysRestore) dumpMeta(meta *pbm.RestoreMeta, s pbm.Status, msg string) 
 }
 
 func (r *PhysRestore) copyFiles() error {
+	copy := r.copyCompressed
+	if r.bcp.Compression == pbm.CompressionTypeNone {
+		copy = r.copyFlat
+	}
+
 	for _, rs := range r.bcp.Replsets {
 		if rs.Name == r.nodeInfo.SetName {
 			for _, f := range rs.Files {
@@ -424,32 +429,9 @@ func (r *PhysRestore) copyFiles() error {
 					return errors.Wrapf(err, "create path %s", filepath.Dir(dst))
 				}
 
-				r.log.Info("copy <%s> to <%s>", src, dst)
-				sr, err := r.stg.SourceReader(src)
+				err = copy(src, dst, f.Fmode)
 				if err != nil {
-					return errors.Wrapf(err, "create source reader for <%s>", src)
-				}
-				defer sr.Close()
-
-				data, err := Decompress(sr, r.bcp.Compression)
-				if err != nil {
-					return errors.Wrapf(err, "decompress object %s", src)
-				}
-				defer data.Close()
-
-				fw, err := os.Create(dst)
-				if err != nil {
-					return errors.Wrapf(err, "create destination file <%s>", dst)
-				}
-				defer fw.Close()
-				err = os.Chmod(dst, f.Fmode)
-				if err != nil {
-					return errors.Wrapf(err, "change permissions for file <%s>", dst)
-				}
-
-				_, err = io.Copy(fw, data)
-				if err != nil {
-					return errors.Wrapf(err, "copy file <%s>", dst)
+					return errors.Wrapf(err, "copy <%s> to <%s>", src, dst)
 				}
 			}
 		}
