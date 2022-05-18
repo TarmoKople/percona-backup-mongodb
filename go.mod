@@ -31,6 +31,7 @@ require (
 	github.com/frankban/quicktest v1.5.0 // indirect
 	github.com/go-ini/ini v1.51.1 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
+	github.com/google/go-cmp v0.5.7 // indirect
 	github.com/jessevdk/go-flags v1.4.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/mattn/go-ieproxy v0.0.1 // indirect

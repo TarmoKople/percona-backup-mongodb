@@ -319,6 +319,20 @@ func (s *S3) Save(name string, data io.Reader, sizeb int) error {
 	}
 }
 
+func (s *S3) Download(name string, to io.WriterAt) (n int64, err error) {
+	awsSession, err := s.session()
+	if err != nil {
+		return 0, errors.Wrap(err, "create AWS session")
+	}
+
+	return s3manager.NewDownloader(awsSession, func(d *s3manager.Downloader) {
+		d.Concurrency = runtime.NumCPU()
+	}).Download(to, &s3.GetObjectInput{
+		Bucket: aws.String(s.opts.Bucket),
+		Key:    aws.String(path.Join(s.opts.Prefix, name)),
+	})
+}
+
 func (s *S3) List(prefix, suffix string) ([]storage.FileInfo, error) {
 	prfx := path.Join(s.opts.Prefix, prefix)
 

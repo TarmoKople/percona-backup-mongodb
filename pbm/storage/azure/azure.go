@@ -148,6 +148,10 @@ func (b *Blob) FileStat(name string) (inf storage.FileInfo, err error) {
 	return inf, nil
 }
 
+func (b *Blob) Download(name string, to io.WriterAt) (n int64, err error) {
+	panic("not implemented for Azure")
+}
+
 func (b *Blob) Copy(src, dst string) error {
 	to := b.c.NewBlobURL(path.Join(b.opts.Prefix, dst))
 	from := b.c.NewBlobURL(path.Join(b.opts.Prefix, src))

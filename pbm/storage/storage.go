@@ -29,4 +29,6 @@ type Storage interface {
 	Delete(name string) error
 	// Copy makes a copy of the src objec/file under dst name
 	Copy(src, dst string) error
+	// Downloads file from the storage into FS file
+	Download(name string, to io.WriterAt) (n int64, err error)
 }

@@ -117,6 +117,10 @@ func (fs *FS) List(prefix, suffix string) ([]storage.FileInfo, error) {
 	return files, err
 }
 
+func (fs *FS) Download(name string, to io.WriterAt) (n int64, err error) {
+	panic("not implemented for FS")
+}
+
 func (fs *FS) Copy(src, dst string) error {
 	from, err := os.Open(path.Join(fs.opts.Path, src))
 	if err != nil {

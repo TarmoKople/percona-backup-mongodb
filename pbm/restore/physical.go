@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	slog "log"
 	"os"
 	"os/exec"
@@ -453,6 +454,58 @@ func (r *PhysRestore) copyFiles() error {
 			}
 		}
 	}
+	return nil
+}
+
+func (r *PhysRestore) copyCompressed(src, dst string, mode fs.FileMode) error {
+	r.log.Info("copy compressed <%s> to <%s>", src, dst)
+	sr, err := r.stg.SourceReader(src)
+	if err != nil {
+		return errors.Wrapf(err, "create source reader for <%s>", src)
+	}
+	defer sr.Close()
+
+	data, err := Decompress(sr, r.bcp.Compression)
+	if err != nil {
+		return errors.Wrapf(err, "decompress object %s", src)
+	}
+	defer data.Close()
+
+	fw, err := os.Create(dst)
+	if err != nil {
+		return errors.Wrapf(err, "create destination file <%s>", dst)
+	}
+	defer fw.Close()
+	err = os.Chmod(dst, mode)
+	if err != nil {
+		return errors.Wrapf(err, "change permissions for file <%s>", dst)
+	}
+
+	_, err = io.Copy(fw, data)
+	if err != nil {
+		return errors.Wrapf(err, "copy file <%s>", dst)
+	}
+
+	return nil
+}
+
+func (r *PhysRestore) copyFlat(src, dst string, mode fs.FileMode) error {
+	r.log.Info("copy <%s> to <%s>", src, dst)
+	fw, err := os.Create(dst)
+	if err != nil {
+		return errors.Wrapf(err, "create destination file <%s>", dst)
+	}
+	defer fw.Close()
+	err = os.Chmod(dst, mode)
+	if err != nil {
+		return errors.Wrapf(err, "change permissions for file <%s>", dst)
+	}
+
+	_, err = r.stg.Download(src, fw)
+	if err != nil {
+		return errors.Wrapf(err, "download file <%s>", dst)
+	}
+
 	return nil
 }
 
