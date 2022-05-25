@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"container/heap"
 	"crypto/tls"
 	"fmt"
@@ -629,10 +630,23 @@ func (pr *partReader) retryChunk(s *s3.S3, start, end int64, retries int) (r io.
 func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err error) {
 	// just quickly retry in case of fail.
 	// more sophisticated retry on a caller side.
-	for i := 0; i < 2; i++ {
+	for i := 0; i < downloadRetries; i++ {
 		r, err = pr.getChunk(s, start, end)
 
 		if err == nil || err == io.EOF {
+			var b bytes.Buffer
+			_, err := io.Copy(&b, r)
+			if err != nil {
+				pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(i))
+				time.Sleep(time.Second * time.Duration(i))
+				s, err = pr.getSess()
+				if err != nil {
+					pr.l.Warning("recreate session")
+					continue
+				}
+				pr.l.Info("session recreated, resuming download")
+				continue
+			}
 			return r, nil
 		}
 
