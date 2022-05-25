@@ -404,22 +404,25 @@ type (
 )
 
 type partReader struct {
-	fname string
-	sess  *s3.S3
-	l     *log.Event
-	opts  *Conf
-	n     int64
-	tsize int64
-	buf   []byte
+	fname   string
+	getSess func() (*s3.S3, error)
+	l       *log.Event
+	opts    *Conf
+	n       int64
+	tsize   int64
+	buf     []byte
+
+	sess *s3.S3
 }
 
 func (s *S3) newPartReader(fname string) *partReader {
 	return &partReader{
-		l:     s.log,
-		buf:   make([]byte, downloadChuckSize),
-		opts:  &s.opts,
-		fname: fname,
-		tsize: -2,
+		l:       s.log,
+		buf:     make([]byte, downloadChuckSize),
+		opts:    &s.opts,
+		fname:   fname,
+		tsize:   -2,
+		getSess: s.s3session,
 	}
 }
 
@@ -539,8 +542,13 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 				}
 
 				if rs.r != nil {
-					b, _ := io.CopyBuffer(w, rs.r, pr.buf) //!!! <== ERROR
+					b, err := io.CopyBuffer(w, rs.r, pr.buf)
 					rs.r.Close()
+					if err != nil {
+						s.log.Error("copy bytes %d-%d from resoponse: %v", rs.chunk.start, rs.chunk.end, err)
+						w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse", rs.chunk.start, rs.chunk.end))
+						return
+					}
 					lastw = rs.chunk.end
 					s.log.Debug("part %d-%d | WRITE (%d) / ln %d", rs.chunk.start, rs.chunk.end, b, len(*rbuf))
 				}
@@ -553,7 +561,12 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 
 					r := heap.Pop(rbuf).(*dResult).r
 					if r != nil {
-						b, _ := io.CopyBuffer(w, r, pr.buf) //!!! <== Error
+						b, err := io.CopyBuffer(w, r, pr.buf)
+						if err != nil {
+							s.log.Error("copy bytes %d-%d from resoponse buffer: %v", v.chunk.start, v.chunk.end, err)
+							w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse buffer", v.chunk.start, v.chunk.end))
+							return
+						}
 						r.Close()
 						s.log.Debug("part %d-%d | BUFF WRITE (%d)", v.chunk.start, v.chunk.end, b)
 						lastw = v.chunk.end
@@ -568,6 +581,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 			case err := <-errc:
 				s.log.Error("download '%s/%s' file from S3: %v", s.opts.Bucket, name, err)
 				w.CloseWithError(errors.Wrapf(err, "download '%s/%s'", s.opts.Bucket, name))
+				return
 			}
 		}
 	}()
@@ -576,20 +590,47 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 }
 
 func (pr *partReader) worker(c <-chan dChunk, result chan<- dResult, errc chan<- error) {
+	sess, err := pr.getSess()
+	if err != nil {
+		errc <- errors.Wrap(err, "create session")
+		return
+	}
 	for chunk := range c {
-		r, err := pr.tryChunk(chunk.start, chunk.end)
+		r, err := pr.retryChunk(sess, chunk.start, chunk.end, downloadRetries)
 		if err != nil {
 			errc <- err
-			return // !!! <== RETRY
+			return
 		}
 
 		result <- dResult{r: r, chunk: chunk}
 	}
 }
 
-func (pr *partReader) tryChunk(start, end int64) (r io.ReadCloser, err error) {
-	for i := 0; i < downloadRetries; i++ {
-		r, err = pr.getChunk(start, end)
+func (pr *partReader) retryChunk(s *s3.S3, start, end int64, retries int) (r io.ReadCloser, err error) {
+	for i := 0; i < retries; i++ {
+		r, err = pr.tryChunk(s, start, end)
+		if err == nil {
+			return r, nil
+		}
+
+		pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(i))
+		time.Sleep(time.Second * time.Duration(i))
+		s, err = pr.getSess()
+		if err != nil {
+			pr.l.Warning("recreate session")
+			continue
+		}
+		pr.l.Info("session recreated, resuming download")
+	}
+
+	return nil, err
+}
+
+func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err error) {
+	// just quickly retry in case of fail.
+	// more sophisticated retry on a caller side.
+	for i := 0; i < 2; i++ {
+		r, err = pr.getChunk(s, start, end)
 
 		if err == nil || err == io.EOF {
 			return r, nil
@@ -600,24 +641,14 @@ func (pr *partReader) tryChunk(start, end int64) (r io.ReadCloser, err error) {
 			return r, err
 		}
 
-		// pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(i+1))
-		// time.Sleep(time.Second * time.Duration(i+1))
-		// s3s, err := s.s3session()
-		// if err != nil {
-		// 	pr.l.Warning("recreate session")
-		// 	continue
-		// }
-		// pr.setSession(s3s)
-		// pr.l.Info("session recreated, resuming download")
-
 		pr.l.Warning("failed to download chunk %d-%d", start, end)
 	}
 
 	return nil, errors.Wrapf(err, "failed to download chunk %d-%d (of %d) after %d retries", start, end, pr.tsize, downloadRetries)
 }
 
-func (pr *partReader) getChunk(start, end int64) (io.ReadCloser, error) {
-	s3obj, err := pr.sess.GetObject(&s3.GetObjectInput{
+func (pr *partReader) getChunk(s *s3.S3, start, end int64) (io.ReadCloser, error) {
+	s3obj, err := s.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(pr.opts.Bucket),
 		Key:    aws.String(path.Join(pr.opts.Prefix, pr.fname)),
 		Range:  aws.String(fmt.Sprintf("bytes=%d-%d", start, end)),
