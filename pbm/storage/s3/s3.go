@@ -636,6 +636,7 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 		if err == nil || err == io.EOF {
 			var b bytes.Buffer
 			_, err := io.Copy(&b, r)
+			r.Close()
 			if err != nil {
 				pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(i))
 				time.Sleep(time.Second * time.Duration(i))
