@@ -641,13 +641,13 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 				time.Sleep(time.Second * time.Duration(i))
 				s, err = pr.getSess()
 				if err != nil {
-					pr.l.Warning("recreate session")
+					pr.l.Warning("recreate session: %v", err)
 					continue
 				}
 				pr.l.Info("session recreated, resuming download")
 				continue
 			}
-			return r, nil
+			return ioutil.NopCloser(&b), nil
 		}
 
 		switch err.(type) {
