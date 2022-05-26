@@ -637,7 +637,7 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 			if r == nil {
 				return nil, err
 			}
-			var b bytes.Buffer
+			b := bytes.Buffer{}
 			_, err := io.Copy(&b, r)
 			r.Close()
 			if err != nil {
