@@ -59,7 +59,7 @@ func main() {
 	hidecreds()
 
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+		log.Println(http.ListenAndServe(":6060", nil))
 	}()
 
 	log.Println("Exit:", runAgent(url, *dumpConns))
