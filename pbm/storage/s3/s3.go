@@ -627,6 +627,15 @@ func (pr *partReader) retryChunk(s *s3.S3, start, end int64, retries int) (r io.
 	return nil, err
 }
 
+type buf struct {
+	*bytes.Buffer
+}
+
+func (b buf) Close() error {
+	b.Buffer.Reset()
+	return nil
+}
+
 func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err error) {
 	// just quickly retry in case of fail.
 	// more sophisticated retry on a caller side.
@@ -651,7 +660,7 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 				pr.l.Info("session recreated, resuming download")
 				continue
 			}
-			return ioutil.NopCloser(&b), nil
+			return buf{&b}, nil
 		}
 
 		switch err.(type) {
