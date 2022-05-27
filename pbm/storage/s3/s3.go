@@ -646,8 +646,8 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 			if r == nil {
 				return nil, err
 			}
-			b := bytes.Buffer{}
-			_, err := io.Copy(&b, r)
+			// _, err := io.Copy(&b, r)
+			bf, err := io.ReadAll(r)
 			r.Close()
 			if err != nil {
 				pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(i))
@@ -660,7 +660,7 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 				pr.l.Info("session recreated, resuming download")
 				continue
 			}
-			return buf{&b}, nil
+			return ioutil.NopCloser(bytes.NewBuffer(bf)), nil
 		}
 
 		switch err.(type) {
