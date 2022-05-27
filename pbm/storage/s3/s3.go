@@ -452,8 +452,9 @@ func (pr *partReader) tryNext(w io.Writer) (n int64, err error) {
 }
 
 type dChunk struct {
-	start int64
-	end   int64
+	start   int64
+	end     int64
+	attempt int
 }
 
 type dResult struct {
@@ -514,7 +515,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					return
 				}
 
-				chunks <- dChunk{pr.n, pr.n + downloadChuckSize - 1}
+				chunks <- dChunk{pr.n, pr.n + downloadChuckSize - 1, 0}
 				pr.n += downloadChuckSize
 			}
 		}
@@ -546,6 +547,12 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					b, err := io.CopyBuffer(w, rs.r, pr.buf)
 					rs.r.Close()
 					if err != nil {
+						if rs.chunk.attempt < downloadRetries {
+							rs.chunk.attempt++
+							pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(rs.chunk.attempt))
+							go func() { chunks <- rs.chunk }()
+							continue
+						}
 						s.log.Error("copy bytes %d-%d from resoponse: %v", rs.chunk.start, rs.chunk.end, err)
 						w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse", rs.chunk.start, rs.chunk.end))
 						return
@@ -597,6 +604,14 @@ func (pr *partReader) worker(c <-chan dChunk, result chan<- dResult, errc chan<-
 		return
 	}
 	for chunk := range c {
+		if chunk.attempt > 0 {
+			time.Sleep(time.Second * time.Duration(chunk.attempt))
+			sess, err = pr.getSess()
+			if err != nil {
+				errc <- errors.Wrap(err, "create session")
+				return
+			}
+		}
 		r, err := pr.retryChunk(sess, chunk.start, chunk.end, downloadRetries)
 		if err != nil {
 			errc <- err
@@ -639,28 +654,11 @@ func (b buf) Close() error {
 func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err error) {
 	// just quickly retry in case of fail.
 	// more sophisticated retry on a caller side.
-	for i := 0; i < downloadRetries; i++ {
+	for i := 0; i < 2; i++ {
 		r, err = pr.getChunk(s, start, end)
 
 		if err == nil || err == io.EOF {
-			if r == nil {
-				return nil, err
-			}
-			// _, err := io.Copy(&b, r)
-			bf, err := io.ReadAll(r)
-			r.Close()
-			if err != nil {
-				pr.l.Warning("got %v, try to reconnect in %v", err, time.Second*time.Duration(i))
-				time.Sleep(time.Second * time.Duration(i))
-				s, err = pr.getSess()
-				if err != nil {
-					pr.l.Warning("recreate session: %v", err)
-					continue
-				}
-				pr.l.Info("session recreated, resuming download")
-				continue
-			}
-			return ioutil.NopCloser(bytes.NewBuffer(bf)), nil
+			return r, nil
 		}
 
 		switch err.(type) {
