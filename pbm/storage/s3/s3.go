@@ -491,6 +491,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 						heap.Push(rbuf, &rs)
 						s.log.Debug("got part %d-%d | WAIT / ln %d", rs.chunk.start, rs.chunk.end, len(*rbuf))
 					} else {
+						s.log.Debug("FULL_BUFF|reschedule part %d-%d / ln %d", rs.chunk.start, rs.chunk.end, len(*rbuf))
 						go func() { pr.results <- rs }()
 					}
 					continue
@@ -503,10 +504,6 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 				}
 
 				for len(*rbuf) > 0 && []*dlResult(*rbuf)[0].chunk.start == pr.written {
-					// if []*dResult(*rbuf)[0].chunk.start != pr.written {
-					// 	break
-					// }
-
 					r := heap.Pop(rbuf).(*dlResult)
 					err := pr.writeChunk(r, w, downloadRetries)
 					if err != nil {
