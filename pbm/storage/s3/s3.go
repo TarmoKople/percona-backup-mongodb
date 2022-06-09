@@ -461,7 +461,7 @@ func (b *chunksBuf) Pop() any {
 }
 
 // TODO: reader != bytes
-const buffMaxSize = 1 << 30 // 10Gb
+const buffMaxSize = 100 << 30 // 10Gb
 
 func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 	fstat, err := s.FileStat(name)
@@ -560,7 +560,7 @@ func (pr *partReader) writeChunk(r *dlResult, to io.Writer, retry int) error {
 	}
 
 	b, err := io.CopyBuffer(to, r.r, pr.buf)
-	pr.l.Debug("part %d-%d | BUFF WRITE (%d)", r.chunk.start, r.chunk.end, b)
+	pr.l.Debug("part %d-%d | WRITE (%d)", r.chunk.start, r.chunk.end, b)
 	pr.written += b
 	r.r.Close()
 	if err == nil {
@@ -579,8 +579,6 @@ func (pr *partReader) writeChunk(r *dlResult, to io.Writer, retry int) error {
 }
 
 func (pr *partReader) worker() {
-	pr.l.Debug("+++ worker started")
-	defer pr.l.Debug("--- worker stoped")
 	sess, err := pr.getSess()
 	if err != nil {
 		pr.errc <- errors.Wrap(err, "create session")
@@ -636,7 +634,8 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 	pr.l.Debug("tryChunk() %v-%v", start, end)
 	// just quickly retry w/o new session in case of fail.
 	// more sophisticated retry on a caller side.
-	for i := 0; i < 2; i++ {
+	const retry = 2
+	for i := 0; i < retry; i++ {
 		r, err = pr.getChunk(s, start, end)
 
 		if err == nil || err == io.EOF {
@@ -651,7 +650,7 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 		pr.l.Warning("failed to download chunk %d-%d", start, end)
 	}
 
-	return nil, errors.Wrapf(err, "failed to download chunk %d-%d (of %d) after %d retries", start, end, pr.tsize, downloadRetries)
+	return nil, errors.Wrapf(err, "failed to download chunk %d-%d (of %d) after %d retries", start, end, pr.tsize, retry)
 }
 
 func (pr *partReader) getChunk(s *s3.S3, start, end int64) (io.ReadCloser, error) {
