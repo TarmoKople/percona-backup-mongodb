@@ -460,8 +460,7 @@ func (b *chunksBuf) Pop() any {
 	return x
 }
 
-// TODO: reader != bytes
-const buffMaxSize = 100 << 30 // 10Gb
+const buffMaxSize = 1000
 
 func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 	fstat, err := s.FileStat(name)
@@ -487,11 +486,10 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 			select {
 			case rs := <-pr.results:
 				if rs.chunk.start != pr.written {
-					if len(*rbuf)*downloadChuckSize <= buffMaxSize {
+					if len(*rbuf) <= buffMaxSize {
 						heap.Push(rbuf, &rs)
-						s.log.Debug("got part %d-%d | WAIT / ln %d", rs.chunk.start, rs.chunk.end, len(*rbuf))
 					} else {
-						s.log.Debug("FULL_BUFF|reschedule part %d-%d / ln %d", rs.chunk.start, rs.chunk.end, len(*rbuf))
+						s.log.Warning("buffer is full (%d), reschedule part %d-%d", len(*rbuf), rs.chunk.start, rs.chunk.end)
 						go func() { pr.results <- rs }()
 					}
 					continue
@@ -560,7 +558,6 @@ func (pr *partReader) writeChunk(r *dlResult, to io.Writer, retry int) error {
 	}
 
 	b, err := io.CopyBuffer(to, r.r, pr.buf)
-	pr.l.Debug("part %d-%d | WRITE (%d)", r.chunk.start, r.chunk.end, b)
 	pr.written += b
 	r.r.Close()
 	if err == nil {
@@ -631,7 +628,6 @@ func (pr *partReader) retryChunk(s *s3.S3, start, end int64, retries int) (r io.
 }
 
 func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err error) {
-	pr.l.Debug("tryChunk() %v-%v", start, end)
 	// just quickly retry w/o new session in case of fail.
 	// more sophisticated retry on a caller side.
 	const retry = 2
