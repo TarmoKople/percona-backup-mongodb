@@ -397,33 +397,30 @@ func (s *S3) FileStat(name string) (inf storage.FileInfo, err error) {
 	return inf, nil
 }
 
-type (
-	errGetObj  error
-	errReadObj error
-)
+type errGetObj error
 
 type partReader struct {
 	fname   string
 	getSess func() (*s3.S3, error)
 	l       *log.Event
 	opts    *Conf
-	tsize   int64
+	fsize   int64
 	written int64
 	buf     []byte
 
-	chunks  chan chunk
-	results chan dlResult
+	taskq   chan chunkMeta
+	resultq chan chunk
 	errc    chan error
 	close   chan struct{}
 }
 
-func (s *S3) newPartReader(fname string, size int64, chunkSize int) *partReader {
+func (s *S3) newPartReader(fname string, fsize int64, chunkSize int) *partReader {
 	return &partReader{
 		l:     s.log,
 		buf:   make([]byte, chunkSize),
 		opts:  &s.opts,
 		fname: fname,
-		tsize: size,
+		fsize: fsize,
 		getSess: func() (*s3.S3, error) {
 			sess, err := s.s3session()
 			if err != nil {
@@ -435,23 +432,23 @@ func (s *S3) newPartReader(fname string, size int64, chunkSize int) *partReader 
 	}
 }
 
-type chunk struct {
+type chunkMeta struct {
 	start   int64
 	end     int64
 	attempt int
 }
 
-type dlResult struct {
-	r     io.ReadCloser
-	chunk chunk
+type chunk struct {
+	r    io.ReadCloser
+	meta chunkMeta
 }
 
-type chunksBuf []*dlResult
+type chunksBuf []*chunk
 
 func (b chunksBuf) Len() int           { return len(b) }
-func (b chunksBuf) Less(i, j int) bool { return b[i].chunk.start < b[j].chunk.start }
+func (b chunksBuf) Less(i, j int) bool { return b[i].meta.start < b[j].meta.start }
 func (b chunksBuf) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b *chunksBuf) Push(x any)        { *b = append(*b, x.(*dlResult)) }
+func (b *chunksBuf) Push(x any)        { *b = append(*b, x.(*chunk)) }
 func (b *chunksBuf) Pop() any {
 	old := *b
 	n := len(old)
@@ -479,39 +476,44 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 			pr.Reset()
 		}()
 
-		rbuf := &chunksBuf{}
-		heap.Init(rbuf)
+		cbuf := &chunksBuf{}
+		heap.Init(cbuf)
 
 		for {
 			select {
-			case rs := <-pr.results:
-				if rs.chunk.start != pr.written {
-					if len(*rbuf) <= buffMaxSize {
-						heap.Push(rbuf, &rs)
+			case rs := <-pr.resultq:
+				// Although chunks are requested concurrently they must be written squentially
+				// to the destination as it's not necessary a file (decompress, mongorestore etc.).
+				// So if it's not a turn (previous chunks wasn't written yet) the chunk will be
+				// added to the buffer to wait.
+				if rs.meta.start != pr.written {
+					if len(*cbuf) <= buffMaxSize {
+						heap.Push(cbuf, &rs)
 					} else {
-						s.log.Warning("buffer is full (%d), reschedule part %d-%d", len(*rbuf), rs.chunk.start, rs.chunk.end)
-						go func() { pr.results <- rs }()
+						s.log.Warning("buffer is full (%d), reschedule part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
+						go func() { pr.resultq <- rs }()
 					}
 					continue
 				}
 
 				err := pr.writeChunk(&rs, w, downloadRetries)
 				if err != nil {
-					w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse buffer", rs.chunk.start, rs.chunk.end))
+					w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse buffer", rs.meta.start, rs.meta.end))
 					return
 				}
 
-				for len(*rbuf) > 0 && []*dlResult(*rbuf)[0].chunk.start == pr.written {
-					r := heap.Pop(rbuf).(*dlResult)
+				// check if we can send something from the buffer
+				for len(*cbuf) > 0 && []*chunk(*cbuf)[0].meta.start == pr.written {
+					r := heap.Pop(cbuf).(*chunk)
 					err := pr.writeChunk(r, w, downloadRetries)
 					if err != nil {
-						w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse buffer", r.chunk.start, r.chunk.end))
+						w.CloseWithError(errors.Wrapf(err, "copy bytes %d-%d from resoponse buffer", r.meta.start, r.meta.end))
 						return
 					}
 				}
 
 				// we've read all bytes in the object
-				if pr.written >= pr.tsize {
+				if pr.written >= pr.fsize {
 					return
 				}
 
@@ -526,19 +528,19 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 }
 
 func (pr *partReader) Run(concurrency int) {
-	pr.chunks = make(chan chunk, concurrency)
-	pr.results = make(chan dlResult)
+	pr.taskq = make(chan chunkMeta, concurrency)
+	pr.resultq = make(chan chunk)
 	pr.errc = make(chan error)
 	pr.close = make(chan struct{})
 
 	go func() {
-		for sent := int64(0); sent <= pr.tsize; {
+		for sent := int64(0); sent <= pr.fsize; {
 			select {
 			case <-pr.close:
 				return
 			default:
 			}
-			pr.chunks <- chunk{sent, sent + downloadChuckSize - 1, 0}
+			pr.taskq <- chunkMeta{sent, sent + downloadChuckSize - 1, 0}
 			sent += downloadChuckSize
 		}
 	}()
@@ -552,7 +554,7 @@ func (pr *partReader) Reset() {
 	close(pr.close)
 }
 
-func (pr *partReader) writeChunk(r *dlResult, to io.Writer, retry int) error {
+func (pr *partReader) writeChunk(r *chunk, to io.Writer, retry int) error {
 	if r == nil || r.r == nil {
 		return nil
 	}
@@ -564,11 +566,11 @@ func (pr *partReader) writeChunk(r *dlResult, to io.Writer, retry int) error {
 		return nil
 	}
 
-	if r.chunk.attempt < downloadRetries {
-		r.chunk.attempt++
-		r.chunk.start = pr.written
-		pr.l.Warning("copy got: %v, try to reconnect in %v", err, time.Second*time.Duration(r.chunk.attempt))
-		go func() { pr.chunks <- r.chunk }()
+	if r.meta.attempt < downloadRetries {
+		r.meta.attempt++
+		r.meta.start = pr.written
+		pr.l.Warning("copy err: %v, try to reconnect in %v", err, time.Second*time.Duration(r.meta.attempt))
+		go func() { pr.taskq <- r.meta }()
 		return nil
 	}
 
@@ -583,9 +585,9 @@ func (pr *partReader) worker() {
 	}
 	for {
 		select {
-		case chunk := <-pr.chunks:
-			if chunk.attempt > 0 {
-				time.Sleep(time.Second * time.Duration(chunk.attempt))
+		case ch := <-pr.taskq:
+			if ch.attempt > 0 {
+				time.Sleep(time.Second * time.Duration(ch.attempt))
 				pr.l.Debug("recreate session")
 				sess, err = pr.getSess()
 				if err != nil {
@@ -593,13 +595,13 @@ func (pr *partReader) worker() {
 					return
 				}
 			}
-			r, err := pr.retryChunk(sess, chunk.start, chunk.end, downloadRetries)
+			r, err := pr.retryChunk(sess, ch.start, ch.end, downloadRetries)
 			if err != nil {
 				pr.errc <- err
 				return
 			}
 
-			pr.results <- dlResult{r: r, chunk: chunk}
+			pr.resultq <- chunk{r: r, meta: ch}
 
 		case <-pr.close:
 			return
@@ -646,7 +648,7 @@ func (pr *partReader) tryChunk(s *s3.S3, start, end int64) (r io.ReadCloser, err
 		pr.l.Warning("failed to download chunk %d-%d", start, end)
 	}
 
-	return nil, errors.Wrapf(err, "failed to download chunk %d-%d (of %d) after %d retries", start, end, pr.tsize, retry)
+	return nil, errors.Wrapf(err, "failed to download chunk %d-%d (of %d) after %d retries", start, end, pr.fsize, retry)
 }
 
 func (pr *partReader) getChunk(s *s3.S3, start, end int64) (io.ReadCloser, error) {

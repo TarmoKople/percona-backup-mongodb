@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"strconv"
@@ -57,10 +55,6 @@ func main() {
 	url := "mongodb://" + strings.Replace(*mURI, "mongodb://", "", 1)
 
 	hidecreds()
-
-	go func() {
-		log.Println(http.ListenAndServe(":6060", nil))
-	}()
 
 	log.Println("Exit:", runAgent(url, *dumpConns))
 }
