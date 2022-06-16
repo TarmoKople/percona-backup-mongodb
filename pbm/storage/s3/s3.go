@@ -492,21 +492,14 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 				// So if it's not a turn (previous chunks weren't written yet) the chunk will be
 				// added to the buffer to wait.
 				if rs.meta.start != pr.written {
-					if len(*cbuf) < buffThrottle {
-						heap.Push(cbuf, &rs)
-						s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
-					} else {
-						s.log.Debug("PAUSE")
+					heap.Push(cbuf, &rs)
+					s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
+
+					if len(*cbuf) == buffThrottle {
+						s.log.Debug("buffer is full (%d), pause schecduling of new chunks until buf is handled")
 						pr.paused = true
-						s.log.Warning("buffer is full (%d), reschedule part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
-						go func() { pr.resultq <- rs }()
 					}
 					continue
-				}
-
-				if pr.paused && len(*cbuf) == 0 {
-					s.log.Debug("UPAUSE")
-					pr.paused = false
 				}
 
 				err := pr.writeChunk(&rs, w, downloadRetries)
@@ -523,6 +516,11 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 						w.CloseWithError(errors.Wrapf(err, "SourceReader: copy bytes %d-%d from resoponse buffer", r.meta.start, r.meta.end))
 						return
 					}
+				}
+
+				if pr.paused && len(*cbuf) == 0 {
+					s.log.Debug("sched unpaused")
+					pr.paused = false
 				}
 
 				// we've read all bytes in the object
