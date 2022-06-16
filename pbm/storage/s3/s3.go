@@ -518,7 +518,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					}
 				}
 
-				if pr.paused && len(*cbuf) == 0 {
+				if pr.paused && len(*cbuf) <= buffThrottle/10 {
 					s.log.Debug("sched unpaused")
 					pr.paused = false
 				}
