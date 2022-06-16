@@ -623,7 +623,7 @@ func (pr *partReader) worker() {
 			if slow && slowc < 1 {
 				slowc++
 				pr.l.Debug("slow heavy music playing | %d", slowc)
-				time.Sleep(5 * time.Second)
+				time.Sleep(50 * time.Second)
 			}
 			r, err := pr.retryChunk(sess, ch.start, ch.end, downloadRetries)
 			if err != nil {
