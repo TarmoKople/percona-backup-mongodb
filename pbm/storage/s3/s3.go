@@ -471,7 +471,11 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 
 	go func() {
 		pr := s.newPartReader(name, fstat.Size, downloadChuckSize)
-		cc := runtime.NumCPU()
+		cc := runtime.GOMAXPROCS(0)
+		if s.opts.NumDownloadWorkers > 0 {
+			cc = s.opts.NumDownloadWorkers
+		}
+
 		pr.Run(cc)
 
 		defer func() {
@@ -496,7 +500,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
 
 					if len(*cbuf) == buffThrottle {
-						s.log.Debug("buffer is full (%d), pause schecduling of new chunks until buf is handled")
+						s.log.Debug("buffer is full (%d), pause schecduling of new chunks until buf is handled", len(*cbuf))
 						pr.paused = true
 					}
 					continue
