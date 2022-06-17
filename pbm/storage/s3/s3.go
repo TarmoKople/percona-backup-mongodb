@@ -605,8 +605,7 @@ func (pr *partReader) worker() {
 		pr.errc <- errors.Wrap(err, "create session")
 		return
 	}
-	var slow bool
-	var slowc int
+
 	for {
 		select {
 		case ch := <-pr.taskq:
@@ -619,16 +618,7 @@ func (pr *partReader) worker() {
 					return
 				}
 			}
-			if ch.start == 0 {
-				pr.l.Debug("SLOW!!!")
-				slow = true
-			}
 
-			if slow && slowc < 1 {
-				slowc++
-				pr.l.Debug("slow heavy music playing | %d", slowc)
-				time.Sleep(50 * time.Second)
-			}
 			r, err := pr.retryChunk(sess, ch.start, ch.end, downloadRetries)
 			if err != nil {
 				pr.errc <- err
