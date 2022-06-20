@@ -495,7 +495,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 		cbuf := &chunksBuf{}
 		heap.Init(cbuf)
 
-		buffThrottle := cc * 100
+		buffThrottle := cc * 50
 
 		for {
 			select {
@@ -507,7 +507,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 				// chunks will be paused for buffer to be handled.
 				if rs.meta.start != pr.written {
 					heap.Push(cbuf, &rs)
-					// s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
+					s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
 					if len(*cbuf) == buffThrottle && pr.PauseSch() {
 						s.log.Debug("buffer is full (%d), pause the new chunks scheduling until it's handled", len(*cbuf))
 					}
@@ -605,14 +605,14 @@ func (pr *partReader) writeChunk(r *chunk, to io.Writer, retry int) error {
 
 	b, err := io.CopyBuffer(to, r.r, pr.buf)
 	pr.written += b
-	// pr.l.Debug("WRITE [%d-%d]", r.meta.start, r.meta.end)
+	pr.l.Debug("WRITE [%d-%d]", r.meta.start, r.meta.end)
 	r.r.Close()
 	if err == nil {
 		return nil
 	}
 
 	if r.meta.attempt < downloadRetries {
-		if !strings.Contains(err.Error(), "context deadline exceeded") {
+		if !strings.Contains(err.Error(), "Client.Timeout or context cancellation while reading body") {
 			r.meta.attempt++
 		}
 		r.meta.start = pr.written
