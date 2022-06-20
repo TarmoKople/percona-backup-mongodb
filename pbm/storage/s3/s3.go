@@ -52,7 +52,15 @@ type Conf struct {
 	UploadPartSize       int         `bson:"uploadPartSize,omitempty" json:"uploadPartSize,omitempty" yaml:"uploadPartSize,omitempty"`
 	MaxUploadParts       int         `bson:"maxUploadParts,omitempty" json:"maxUploadParts,omitempty" yaml:"maxUploadParts,omitempty"`
 	StorageClass         string      `bson:"storageClass,omitempty" json:"storageClass,omitempty" yaml:"storageClass,omitempty"`
-	NumDownloadWorkers   int         `bson:"numDownloadWorkers" json:"numDownloadWorkers,omitempty" yaml:"numDownloadWorkers,omitempty"`
+
+	// NumDownloadWorkers sets the num of goroutine would be requesting chunks
+	// during the download. By default, it's set to GOMAXPROCS. Setting this
+	// option too high may result in performance degradation. As routines
+	// might prefetch too many chunks (HTTPBody). Although we can prefetch
+	// chunks concurrently the data should be written sequentially. And while
+	// chunks will be  waiting to be read and sent to the destination the
+	// `HTTPClient.Timeout` will run out and the chunk should be prefetched again.
+	NumDownloadWorkers int `bson:"numDownloadWorkers" json:"numDownloadWorkers,omitempty" yaml:"numDownloadWorkers,omitempty"`
 
 	// InsecureSkipTLSVerify disables client verification of the server's
 	// certificate chain and host name
@@ -487,7 +495,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 		cbuf := &chunksBuf{}
 		heap.Init(cbuf)
 
-		buffThrottle := cc * 5
+		buffThrottle := cc * 100
 
 		for {
 			select {
@@ -499,7 +507,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 				// chunks will be paused for buffer to be handled.
 				if rs.meta.start != pr.written {
 					heap.Push(cbuf, &rs)
-
+					// s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
 					if len(*cbuf) == buffThrottle && pr.PauseSch() {
 						s.log.Debug("buffer is full (%d), pause the new chunks scheduling until it's handled", len(*cbuf))
 					}
@@ -597,6 +605,7 @@ func (pr *partReader) writeChunk(r *chunk, to io.Writer, retry int) error {
 
 	b, err := io.CopyBuffer(to, r.r, pr.buf)
 	pr.written += b
+	// pr.l.Debug("WRITE [%d-%d]", r.meta.start, r.meta.end)
 	r.r.Close()
 	if err == nil {
 		return nil
