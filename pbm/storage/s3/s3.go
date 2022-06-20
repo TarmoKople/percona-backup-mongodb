@@ -11,6 +11,7 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -408,12 +409,13 @@ type partReader struct {
 	fsize   int64
 	written int64
 	buf     []byte
-	paused  bool
+	pause   int32
 
 	taskq   chan chunkMeta
 	resultq chan chunk
 	errc    chan error
 	close   chan struct{}
+	unpause chan struct{}
 }
 
 func (s *S3) newPartReader(fname string, fsize int64, chunkSize int) *partReader {
@@ -438,8 +440,6 @@ type chunkMeta struct {
 	start   int64
 	end     int64
 	attempt int
-
-	ts int64
 }
 
 type chunk struct {
@@ -471,6 +471,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 
 	go func() {
 		pr := s.newPartReader(name, fstat.Size, downloadChuckSize)
+
 		cc := runtime.GOMAXPROCS(0)
 		if s.opts.NumDownloadWorkers > 0 {
 			cc = s.opts.NumDownloadWorkers
@@ -492,16 +493,15 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 			select {
 			case rs := <-pr.resultq:
 				// Although chunks are requested concurrently they must be written sequentially
-				// to the destination as it's not necessary a file (decompress, mongorestore etc.).
-				// So if it's not a turn (previous chunks weren't written yet) the chunk will be
-				// added to the buffer to wait.
+				// to the destination as it is not necessary a file (decompress, mongorestore etc.).
+				// If it is not its turn (previous chunks weren't written yet) the chunk will be
+				// added to the buffer to wait. If the buffer grows too much the scheduling of new
+				// chunks will be paused for buffer to be handled.
 				if rs.meta.start != pr.written {
 					heap.Push(cbuf, &rs)
-					s.log.Debug("push to buf (%d) part %d-%d", len(*cbuf), rs.meta.start, rs.meta.end)
 
-					if len(*cbuf) == buffThrottle {
-						s.log.Debug("buffer is full (%d), pause schecduling of new chunks until buf is handled", len(*cbuf))
-						pr.paused = true
+					if len(*cbuf) == buffThrottle && pr.PauseSch() {
+						s.log.Debug("buffer is full (%d), pause the new chunks scheduling until it's handled", len(*cbuf))
 					}
 					continue
 				}
@@ -522,9 +522,8 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 					}
 				}
 
-				if pr.paused && len(*cbuf) <= buffThrottle/10 {
-					s.log.Debug("sched unpaused")
-					pr.paused = false
+				if len(*cbuf) == 0 && pr.UnpauseSch() {
+					s.log.Debug("scheduling unpaused")
 				}
 
 				// we've read all bytes in the object
@@ -542,11 +541,24 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 	return r, nil
 }
 
+func (pr *partReader) PauseSch() bool {
+	return atomic.CompareAndSwapInt32(&pr.pause, 0, 1)
+}
+
+func (pr *partReader) UnpauseSch() bool {
+	if atomic.CompareAndSwapInt32(&pr.pause, 2, 0) {
+		pr.unpause <- struct{}{}
+		return true
+	}
+	return atomic.CompareAndSwapInt32(&pr.pause, 1, 0)
+}
+
 func (pr *partReader) Run(concurrency int) {
 	pr.taskq = make(chan chunkMeta, concurrency)
 	pr.resultq = make(chan chunk)
 	pr.errc = make(chan error)
 	pr.close = make(chan struct{})
+	pr.unpause = make(chan struct{})
 
 	go func() {
 		for sent := int64(0); sent <= pr.fsize; {
@@ -555,11 +567,15 @@ func (pr *partReader) Run(concurrency int) {
 				return
 			default:
 			}
-			if pr.paused {
-				time.Sleep(time.Microsecond * 100)
-				continue
+			// If pause set (`1`), not to burn cpu cycles we're blocking waiting for
+			// a msg in unpause. But the pause can be set after all chunks are scheduled
+			// and this routine exists. So `2` signals a msg should be sent to `pr.unpause`
+			// during unpause.
+			if atomic.CompareAndSwapInt32(&pr.pause, 1, 2) {
+				<-pr.unpause
 			}
-			pr.taskq <- chunkMeta{sent, sent + downloadChuckSize - 1, 0, 0}
+
+			pr.taskq <- chunkMeta{sent, sent + downloadChuckSize - 1, 0}
 			sent += downloadChuckSize
 		}
 	}()
@@ -570,6 +586,7 @@ func (pr *partReader) Run(concurrency int) {
 }
 
 func (pr *partReader) Reset() {
+	pr.UnpauseSch()
 	close(pr.close)
 }
 
@@ -580,7 +597,6 @@ func (pr *partReader) writeChunk(r *chunk, to io.Writer, retry int) error {
 
 	b, err := io.CopyBuffer(to, r.r, pr.buf)
 	pr.written += b
-	pr.l.Debug("WRITE [%d-%d]", r.meta.start, r.meta.end)
 	r.r.Close()
 	if err == nil {
 		return nil
@@ -591,7 +607,7 @@ func (pr *partReader) writeChunk(r *chunk, to io.Writer, retry int) error {
 			r.meta.attempt++
 		}
 		r.meta.start = pr.written
-		pr.l.Warning("writeChunk: copy err: %v, try to redo in %v (%d-%d / %v)", err, time.Second*time.Duration(r.meta.attempt), r.meta.start, r.meta.end, time.Unix(r.meta.ts, 0))
+		pr.l.Warning("writeChunk: copy err: %v, redo in %v (%d-%d)", err, time.Second*time.Duration(r.meta.attempt), r.meta.start, r.meta.end)
 		go func() { pr.taskq <- r.meta }()
 		return nil
 	}
@@ -605,7 +621,6 @@ func (pr *partReader) worker() {
 		pr.errc <- errors.Wrap(err, "create session")
 		return
 	}
-
 	for {
 		select {
 		case ch := <-pr.taskq:
@@ -625,7 +640,6 @@ func (pr *partReader) worker() {
 				return
 			}
 
-			ch.ts = time.Now().Unix()
 			pr.resultq <- chunk{r: r, meta: ch}
 
 		case <-pr.close:
