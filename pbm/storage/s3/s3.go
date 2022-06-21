@@ -523,6 +523,7 @@ func (s *S3) SourceReader(name string) (io.ReadCloser, error) {
 				// check if we can send something from the buffer
 				for len(*cbuf) > 0 && []*chunk(*cbuf)[0].meta.start == pr.written {
 					r := heap.Pop(cbuf).(*chunk)
+					pr.l.Debug("WRITE BUFF [%d-%d]", r.meta.start, r.meta.end)
 					err := pr.writeChunk(r, w, downloadRetries)
 					if err != nil {
 						w.CloseWithError(errors.Wrapf(err, "SourceReader: copy bytes %d-%d from resoponse buffer", r.meta.start, r.meta.end))
@@ -605,7 +606,6 @@ func (pr *partReader) writeChunk(r *chunk, to io.Writer, retry int) error {
 
 	b, err := io.CopyBuffer(to, r.r, pr.buf)
 	pr.written += b
-	pr.l.Debug("WRITE [%d-%d]", r.meta.start, r.meta.end)
 	r.r.Close()
 	if err == nil {
 		return nil
