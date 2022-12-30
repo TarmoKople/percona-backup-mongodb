@@ -134,18 +134,18 @@ func prepareData(bcp *pbm.BackupMeta) error {
 
 	ctx := context.Background()
 
-	err = c.Database("local").Collection("replset.minvalid").Drop(ctx)
-	if err != nil {
-		return errors.Wrap(err, "drop replset.minvalid")
-	}
-	err = c.Database("local").Collection("replset.oplogTruncateAfterPoint").Drop(ctx)
-	if err != nil {
-		return errors.Wrap(err, "drop replset.oplogTruncateAfterPoint")
-	}
-	err = c.Database("local").Collection("replset.election").Drop(ctx)
-	if err != nil {
-		return errors.Wrap(err, "drop replset.election")
-	}
+	//err = c.Database("local").Collection("replset.minvalid").Drop(ctx)
+	//if err != nil {
+	//	return errors.Wrap(err, "drop replset.minvalid")
+	//}
+	//err = c.Database("local").Collection("replset.oplogTruncateAfterPoint").Drop(ctx)
+	//if err != nil {
+	//	return errors.Wrap(err, "drop replset.oplogTruncateAfterPoint")
+	//}
+	//err = c.Database("local").Collection("replset.election").Drop(ctx)
+	//if err != nil {
+	//	return errors.Wrap(err, "drop replset.election")
+	//}
 	//_, err = c.Database("local").Collection("system.replset").DeleteMany(ctx, bson.D{})
 	//if err != nil {
 	//	return errors.Wrap(err, "delete from system.replset")
